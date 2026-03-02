@@ -1,3 +1,33 @@
+## **LinkedIn Project Entry**
+
+### **Project Name**
+EasyHomeworkPDF – Automated Homework Submission Tool
+
+### **LinkedIn Description**
+EasyHomeworkPDF is a serverless Azure Function App that automates the conversion of student homework images into a single, submission-ready PDF file.
+
+Students upload their homework images along with their personal details (name, student ID, subject name, subject code, instructor, and section number). The app then:
+• Automatically generates a professional cover page containing the student's information and the university logo.
+• Merges the cover page with the submitted images.
+• Converts the entire set into a single PDF file.
+• Uploads the PDF to Azure Blob Storage.
+• Returns a direct download link for immediate submission on the Moodle platform.
+
+The tool was built to solve a real limitation on Moodle, which only accepts a maximum of two image uploads per assignment. By bundling everything into one PDF, students can include all their work in a single file without any manual effort.
+
+📊 Impact: Over 2,000 PDFs generated, helping students submit homework efficiently.
+
+🛠️ Tech Stack: C# · .NET · Azure Functions · Azure Blob Storage · PdfSharpCore · REST API
+
+### **Suggested Skills**
+C# · .NET · Azure Functions · Azure Blob Storage · REST APIs · Cloud Computing · PDF Generation · Image Processing
+
+### **Project Dates**
+- **Start:** July 2024
+- **End:** October 2024
+
+---
+
 ## **EasyHomeworkPDF - Azure Function App**
 
 **Description**:  
