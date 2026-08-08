@@ -18,15 +18,21 @@ namespace TaskImagesToPdfFunctionApp
     {
         private readonly string blobConnectionString;
         private readonly string containerName;
+        private readonly ILogger<CreateImageAndConvertToPdf> logger;
 
-        public CreateImageAndConvertToPdf()
+        // الشعارات ثابتة، فنجلبها مرة واحدة لكل نسخة بدل كل طلب
+        private static readonly HttpClient httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte[]> logoCache = new();
+
+        public CreateImageAndConvertToPdf(ILogger<CreateImageAndConvertToPdf> logger)
         {
+            this.logger = logger;
             blobConnectionString = Environment.GetEnvironmentVariable("BlobConnectionString", EnvironmentVariableTarget.Process);
             containerName = Environment.GetEnvironmentVariable("ContainerName", EnvironmentVariableTarget.Process);
         }
 
         [Function("CreateImageAndConvertToPdf")]
-        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "get", "post")] HttpRequest req)
+        public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")] HttpRequest req)
         {
             try
             {
@@ -46,7 +52,19 @@ namespace TaskImagesToPdfFunctionApp
                 sectionNumber = string.IsNullOrEmpty(sectionNumber) ? "" : sectionNumber;
 
                 subjectName = ReformatTextWithParentheses(subjectName);
+
+                if (string.IsNullOrWhiteSpace(blobConnectionString) || string.IsNullOrWhiteSpace(containerName))
+                {
+                    logger.LogError("BlobConnectionString/ContainerName app settings are missing.");
+                    return new ObjectResult("Storage is not configured.") { StatusCode = StatusCodes.Status500InternalServerError };
+                }
+
                 // Check if there are any files in the request
+                if (!req.HasFormContentType)
+                {
+                    return new BadRequestObjectResult("Request must be multipart/form-data.");
+                }
+
                 var formFiles = req.Form.Files;
                 if (formFiles.Count == 0)
                 {
@@ -57,9 +75,11 @@ namespace TaskImagesToPdfFunctionApp
                 var pdfDocument = new PdfDocument();
                 
                 // Process first image with details
-                var firstImage = CreateTheFirstPageImageWithDetails( studentName,  studentId,  subjectName,  subjectCode,  instructorName, sectionNumber);
                 var firstImageStream = new MemoryStream();
-                firstImage.Save(firstImageStream, ImageFormat.Png);
+                using (var firstImage = CreateTheFirstPageImageWithDetails(studentName, studentId, subjectName, subjectCode, instructorName, sectionNumber))
+                {
+                    firstImage.Save(firstImageStream, ImageFormat.Png);
+                }
                 firstImageStream.Position = 0;
 
                 var xImage = XImage.FromStream(() => firstImageStream);
@@ -111,11 +131,13 @@ namespace TaskImagesToPdfFunctionApp
                 }
                 catch (Exception ex)
                 {
+                    logger.LogError(ex, "Failed to save the PDF or upload it to blob storage.");
                     return new StatusCodeResult(StatusCodes.Status500InternalServerError);
                 }
             }
             catch (Exception ex)
             {
+                logger.LogError(ex, "Failed to build the PDF from the uploaded images.");
                 return new StatusCodeResult(StatusCodes.Status500InternalServerError);
             }
         }
@@ -129,9 +151,13 @@ namespace TaskImagesToPdfFunctionApp
             await containerClient.CreateIfNotExistsAsync(PublicAccessType.Blob);
            
             var blobClient = containerClient.GetBlobClient(fileName);
+
+            // نتركه application/octet-stream عمداً: القراءة المجهولة من Blob تتم بنسخة API قديمة
+            // لا تُرجع Content-Disposition، فلو ضبطنا application/pdf سيعرضه المتصفح بدل تنزيله.
             await blobClient.UploadAsync(fileStream, overwrite: true);
 
-            return blobClient.Uri.ToString();
+            // AbsoluteUri يعيد الرابط مُرمَّزاً (الاسم يحتوي عربية ومسافات)
+            return blobClient.Uri.AbsoluteUri;
         }
 
         private Bitmap CreateTheFirstPageImageWithDetails(string studentName, string studentId, string subjectName, string subjectCode, string instructorName, string sectionNumber)
@@ -159,25 +185,21 @@ namespace TaskImagesToPdfFunctionApp
 
                 try
                 {
-                    var logoUrl = "https://www.zamayl.com/assets/img/site/qouLogoNew.png";
-                    using (var client = new System.Net.WebClient())
+                    var logoBytes = GetLogo("https://www.zamayl.com/assets/img/site/qouLogoNew.png");
+                    using (var memoryStream = new System.IO.MemoryStream(logoBytes))
+                    using (var logoImage = Image.FromStream(memoryStream))
                     {
-                        var logoBytes = client.DownloadData(logoUrl);
-                        using (var memoryStream = new System.IO.MemoryStream(logoBytes))
-                        {
-                            var logoImage = Image.FromStream(memoryStream);
-                            var logoWidth = 120; // حجم الشعار
-                            var logoHeight = 120;
-                            var logoX = (width - logoWidth) / 2;
-                            var logoY = 120;
+                        var logoWidth = 120; // حجم الشعار
+                        var logoHeight = 120;
+                        var logoX = (width - logoWidth) / 2;
+                        var logoY = 120;
 
-                            graphics.DrawImage(logoImage, new Rectangle(logoX, logoY, logoWidth, logoHeight));
-                        }
+                        graphics.DrawImage(logoImage, new Rectangle(logoX, logoY, logoWidth, logoHeight));
                     }
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("Error loading logo: " + ex.Message);
+                    logger.LogWarning(ex, "Error loading header logo.");
                 }
 
                 // تفاصيل العناوين
@@ -212,39 +234,43 @@ namespace TaskImagesToPdfFunctionApp
                 // إضافة الشعار كعلامة مائية في الأسفل
                 try
                 {
-                    var logoUrl = "https://www.zamayl.com/assets/img/site/zamayl-task-service-logo.png";
-                    using (var client = new System.Net.WebClient())
+                    var logoBytes = GetLogo("https://www.zamayl.com/assets/img/site/zamayl-task-service-logo.png");
+                    using (var memoryStream = new System.IO.MemoryStream(logoBytes))
+                    using (var logoImage = Image.FromStream(memoryStream))
+                    using (var imageAttributes = new ImageAttributes())
                     {
-                        var logoBytes = client.DownloadData(logoUrl);
-                        using (var memoryStream = new System.IO.MemoryStream(logoBytes))
-                        {
-                            var logoImage = Image.FromStream(memoryStream);
+                        // حجم الشعار الكبير (كنمط علامة مائية)
+                        var watermarkWidth = 400; // حجم الشعار
+                        var watermarkHeight = 400;
+                        var watermarkX = (width - watermarkWidth) / 2; // محاذاة للشعار في المنتصف
+                        var watermarkY = height - watermarkHeight - 50; // وضعه أسفل الصفحة
 
-                            // حجم الشعار الكبير (كنمط علامة مائية)
-                            var watermarkWidth = 400; // حجم الشعار
-                            var watermarkHeight = 400;
-                            var watermarkX = (width - watermarkWidth) / 2; // محاذاة للشعار في المنتصف
-                            var watermarkY = height - watermarkHeight - 50; // وضعه أسفل الصفحة
+                        // إنشاء ImageAttributes مع ColorMatrix لتعديل الشفافية
+                        var colorMatrix = new System.Drawing.Imaging.ColorMatrix();
+                        colorMatrix.Matrix33 = 1f; // تعديل الشفافية بنسبة 20%
 
-                            // إنشاء ImageAttributes مع ColorMatrix لتعديل الشفافية
-                            var imageAttributes = new ImageAttributes();
-                            var colorMatrix = new System.Drawing.Imaging.ColorMatrix();
-                            colorMatrix.Matrix33 = 1f; // تعديل الشفافية بنسبة 20%
+                        imageAttributes.SetColorMatrix(colorMatrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
 
-                            imageAttributes.SetColorMatrix(colorMatrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
-
-                            // رسم الشعار مع الشفافية
-                            graphics.DrawImage(logoImage, new Rectangle(watermarkX, watermarkY, watermarkWidth, watermarkHeight), 0, 0, logoImage.Width, logoImage.Height, GraphicsUnit.Pixel, imageAttributes);
-                        }
+                        // رسم الشعار مع الشفافية
+                        graphics.DrawImage(logoImage, new Rectangle(watermarkX, watermarkY, watermarkWidth, watermarkHeight), 0, 0, logoImage.Width, logoImage.Height, GraphicsUnit.Pixel, imageAttributes);
                     }
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine("Error loading watermark logo: " + ex.Message);
+                    logger.LogWarning(ex, "Error loading watermark logo.");
                 }
             }
 
             return bitmap;
+        }
+
+
+
+
+        // يجلب الشعار مرة واحدة ثم يعيده من الذاكرة في الطلبات التالية
+        private static byte[] GetLogo(string logoUrl)
+        {
+            return logoCache.GetOrAdd(logoUrl, url => httpClient.GetByteArrayAsync(url).GetAwaiter().GetResult());
         }
 
 
