@@ -9,15 +9,12 @@ using System.Drawing.Imaging;
 using PdfSharpCore.Drawing;
 using PdfSharpCore.Pdf;
 using System.Drawing.Drawing2D;
-using Azure.Storage.Blobs;
-using Azure.Storage.Blobs.Models;
 
 namespace TaskImagesToPdfFunctionApp
 {
     internal class CreateImageAndConvertToPdf
     {
-        private readonly string blobConnectionString;
-        private readonly string containerName;
+        private readonly R2StorageService storage;
         private readonly ILogger<CreateImageAndConvertToPdf> logger;
 
         // الشعارات ثابتة، فنجلبها مرة واحدة لكل نسخة بدل كل طلب
@@ -27,8 +24,7 @@ namespace TaskImagesToPdfFunctionApp
         public CreateImageAndConvertToPdf(ILogger<CreateImageAndConvertToPdf> logger)
         {
             this.logger = logger;
-            blobConnectionString = Environment.GetEnvironmentVariable("BlobConnectionString", EnvironmentVariableTarget.Process);
-            containerName = Environment.GetEnvironmentVariable("ContainerName", EnvironmentVariableTarget.Process);
+            storage = new R2StorageService();
         }
 
         [Function("CreateImageAndConvertToPdf")]
@@ -54,9 +50,9 @@ namespace TaskImagesToPdfFunctionApp
 
                 subjectName = ReformatTextWithParentheses(subjectName);
 
-                if (string.IsNullOrWhiteSpace(blobConnectionString) || string.IsNullOrWhiteSpace(containerName))
+                if (!storage.IsConfigured)
                 {
-                    logger.LogError("BlobConnectionString/ContainerName app settings are missing.");
+                    logger.LogError("R2AccountId/R2AccessKey/R2SecretKey app settings are missing.");
                     return new ObjectResult("Storage is not configured.") { StatusCode = StatusCodes.Status500InternalServerError };
                 }
 
@@ -118,18 +114,14 @@ namespace TaskImagesToPdfFunctionApp
                     pdfDocument.Save(pdfStream);
                     pdfStream.Position = 0;
 
-                    studentName = string.IsNullOrEmpty(studentName) ? "" : $"_الطالب {studentName}";
+                    var studentSuffix = string.IsNullOrEmpty(studentName) ? "" : $"_الطالب {studentName}";
 
-                    //return new FileStreamResult(pdfStream, "application/pdf")
-                    //{
-                    //    FileDownloadName = $"حل_نشاط_{subjectName}{studentName}.pdf"
-                    //};
+                    // مفتاح الكائن ASCII بحت لتبقى الروابط نظيفة، والاسم العربي يصل عبر Content-Disposition.
+                    string objectKey = $"{Guid.NewGuid():N}.pdf";
+                    string downloadFileName = $"حل نشاط {subjectName}{studentSuffix}.pdf";
 
-                    string uniqueId = Guid.NewGuid().ToString("N"); // Removes dashes
-
-                    // upload to Azure Blob Storage
-                    string fileName = $"حل نشاط {subjectName}{studentName}_{uniqueId}.pdf";
-                    string fileUrl = await UploadToAzureBlob(pdfStream, fileName);
+                    string fileUrl = await storage.UploadPdfAsync(
+                        pdfStream, objectKey, downloadFileName, req.HttpContext.RequestAborted);
 
                     // returns uploaded file url.
                     return new OkObjectResult(new { FileUrl = fileUrl });
@@ -137,7 +129,7 @@ namespace TaskImagesToPdfFunctionApp
                 }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Failed to save the PDF or upload it to blob storage.");
+                    logger.LogError(ex, "Failed to save the PDF or upload it to R2 storage.");
                     return new StatusCodeResult(StatusCodes.Status500InternalServerError);
                 }
             }
@@ -148,23 +140,6 @@ namespace TaskImagesToPdfFunctionApp
             }
         }
 
-
-        private async Task<string> UploadToAzureBlob(Stream fileStream, string fileName)
-        {
-            var blobServiceClient = new BlobServiceClient(blobConnectionString);
-            var containerClient = blobServiceClient.GetBlobContainerClient(containerName);
-
-            await containerClient.CreateIfNotExistsAsync(PublicAccessType.Blob);
-           
-            var blobClient = containerClient.GetBlobClient(fileName);
-
-            // نتركه application/octet-stream عمداً: القراءة المجهولة من Blob تتم بنسخة API قديمة
-            // لا تُرجع Content-Disposition، فلو ضبطنا application/pdf سيعرضه المتصفح بدل تنزيله.
-            await blobClient.UploadAsync(fileStream, overwrite: true);
-
-            // AbsoluteUri يعيد الرابط مُرمَّزاً (الاسم يحتوي عربية ومسافات)
-            return blobClient.Uri.AbsoluteUri;
-        }
 
         private Bitmap CreateTheFirstPageImageWithDetails(string studentName, string studentId, string subjectName, string subjectCode, string instructorName, string sectionNumber, SemesterInfo semester)
         {
