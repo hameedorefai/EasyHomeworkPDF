@@ -43,6 +43,7 @@ namespace TaskImagesToPdfFunctionApp
                 var subjectCode = req.Query["subjectCode"];
                 var instructorName = req.Query["instructorName"];
                 var sectionNumber = req.Query["sectionNumber"];
+                var semesterCode = req.Query["semesterCode"].ToString();
 
                 studentName = string.IsNullOrEmpty(studentName) ? "" : studentName;
                 studentId = string.IsNullOrEmpty(studentId) ? "" : studentId;
@@ -71,12 +72,17 @@ namespace TaskImagesToPdfFunctionApp
                     return new BadRequestObjectResult("No image files uploaded.");
                 }
 
+                // الفصل الدراسي يُجلب من التقويم الأكاديمي، ويمكن تجاوزه بـ semesterCode للتسليم المتأخر.
+                var semester = SemesterInfo.IsValidCode(semesterCode)
+                    ? SemesterInfo.FromCode(semesterCode)
+                    : await CurrentSemesterProvider.GetAsync(logger, req.HttpContext.RequestAborted);
+
                 // Create a new PDF document
                 var pdfDocument = new PdfDocument();
-                
+
                 // Process first image with details
                 var firstImageStream = new MemoryStream();
-                using (var firstImage = CreateTheFirstPageImageWithDetails(studentName, studentId, subjectName, subjectCode, instructorName, sectionNumber))
+                using (var firstImage = CreateTheFirstPageImageWithDetails(studentName, studentId, subjectName, subjectCode, instructorName, sectionNumber, semester))
                 {
                     firstImage.Save(firstImageStream, ImageFormat.Png);
                 }
@@ -160,7 +166,7 @@ namespace TaskImagesToPdfFunctionApp
             return blobClient.Uri.AbsoluteUri;
         }
 
-        private Bitmap CreateTheFirstPageImageWithDetails(string studentName, string studentId, string subjectName, string subjectCode, string instructorName, string sectionNumber)
+        private Bitmap CreateTheFirstPageImageWithDetails(string studentName, string studentId, string subjectName, string subjectCode, string instructorName, string sectionNumber, SemesterInfo semester)
         {
             var width = 1190;  // عرض A4 بدقة 300 dpi
             var height = 1684; // ارتفاع A4 بدقة 300 dpi
@@ -177,9 +183,16 @@ namespace TaskImagesToPdfFunctionApp
                 var centerFont = new Font("Arial", 28, FontStyle.Bold);  // خط كبير للعناوين الرئيسية
 
                 var brush = Brushes.Black;
-                var centerFormat = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-                var rightFormat = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Center };
-                var leftFormat = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
+
+                // كل نصوص الغلاف عربية، فاتجاه الفقرة يجب أن يكون RTL.
+                // بدونه يفترض GDI+ اتجاهاً LTR: السطر العربي الخالص يبدو سليماً بالمصادفة لأنه مقطع واحد،
+                // لكن ما إن تظهر قيمة لاتينية (اسم مقرر مثل Structure1) حتى ينقلب السطر
+                // فتصير التسمية يساراً والقيمة يميناً، عكس بقية السطور.
+                const StringFormatFlags rtl = StringFormatFlags.DirectionRightToLeft;
+
+                // ملاحظة: مع DirectionRightToLeft تنقلب دلالة المحاذاة، فـ Near تعني اليمين و Far تعني اليسار.
+                var centerFormat = new StringFormat(rtl) { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+                var rightFormat = new StringFormat(rtl) { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center };
 
                 graphics.DrawString("بسم الله الرحمن الرحيم", centerFont, brush, new RectangleF(0, 50, width, 50), centerFormat);
 
@@ -204,8 +217,8 @@ namespace TaskImagesToPdfFunctionApp
 
                 // تفاصيل العناوين
                 graphics.DrawString("جامعة القدس المفتوحة", centerFont, brush, new RectangleF(0, 260, width, 50), centerFormat);
-                graphics.DrawString("حل النشاط للفصل الدراسي الثاني 1242", subFont, Brushes.Red, new RectangleF(0, 310, width, 50), centerFormat);
-                graphics.DrawString("2024/2025", subFont, brush, new RectangleF(0, 360, width, 50), centerFormat);
+                graphics.DrawString(semester.HeaderLine, subFont, Brushes.Red, new RectangleF(0, 310, width, 50), centerFormat);
+                graphics.DrawString(semester.AcademicYear, subFont, brush, new RectangleF(0, 360, width, 50), centerFormat);
 
                 // تفاصيل الطالب والمقرر
                 var detailsStartY = 440;
@@ -216,9 +229,9 @@ namespace TaskImagesToPdfFunctionApp
                 float rightColumnWidth = 0.61f * width; // العمود الأيمن (61%)
 
                 // إعداد تنسيق العمود الأيسر (محاذاة إلى اليمين)
-                StringFormat leftColumnRightAlignedFormat = new StringFormat
+                StringFormat leftColumnRightAlignedFormat = new StringFormat(rtl)
                 {
-                    Alignment = StringAlignment.Far, // محاذاة إلى اليمين
+                    Alignment = StringAlignment.Near, // محاذاة إلى اليمين (Near مع RTL)
                     LineAlignment = StringAlignment.Center // محاذاة عمودية وسط
                 };
 
