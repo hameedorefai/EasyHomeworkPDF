@@ -61,7 +61,7 @@ namespace TaskImagesToPdfFunctionApp
     internal static class CurrentSemesterProvider
     {
         private const string DefaultApiUrl =
-            "https://zamayl7.azurewebsites.net/api/AcademicCalendar/Qou/current-semester";
+            "https://zamayl72.azurewebsites.net/api/AcademicCalendar/Qou/current-semester";
 
         private static readonly HttpClient httpClient = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         private static readonly SemaphoreSlim gate = new SemaphoreSlim(1, 1);
